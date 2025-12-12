@@ -814,18 +814,18 @@ const App: React.FC = () => {
         >
           {/* ✅ Logo置中 + 標題置中 + 編號日期右上角 */}
           <div className="relative mb-6">
-            <div className="absolute right-0 top-0 text-[10px] leading-relaxed text-right">
+            <div className="absolute right-0 top-0 text-[10px] leading-relaxed text-right text-gray-800">
+              <div>西川米店報價單</div>
               <div>報價單編號：{quoteNo}</div>
               <div>日期：{dateStr}</div>
             </div>
 
-            <div className="flex flex-col items-center justify-center gap-2">
+            <div className="flex flex-col items-center justify-center">
               <img
                 src="/cichuan-logo.png"
                 alt="西川米店"
                 style={{ height: 44, width: "auto" }}
               />
-              <div className="text-sm font-bold">西川米店 報價單</div>
             </div>
           </div>
 
@@ -867,42 +867,42 @@ const App: React.FC = () => {
 
             <thead>
               <tr className="bg-gray-100">
-                <th className="border px-3 py-2 text-center">品項</th>
-                <th className="border px-3 py-2 text-center">米包數量</th>
-                <th className="border px-3 py-2 text-center">米包單價</th>
-                <th className="border px-3 py-2 text-center">米包小計</th>
-                <th className="border px-3 py-2 text-center">客製數量（張）</th>
-                <th className="border px-3 py-2 text-center">客製單價</th>
-                <th className="border px-3 py-2 text-center">客製小計</th>
-                <th className="border px-3 py-2 text-center">小計</th>
+                <th className="border px-3 py-3 text-center align-middle leading-none whitespace-nowrap">品項</th>
+                <th className="border px-3 py-3 text-center align-middle leading-none whitespace-nowrap">米包數量</th>
+                <th className="border px-3 py-3 text-center align-middle leading-none whitespace-nowrap">米包單價</th>
+                <th className="border px-3 py-3 text-center align-middle leading-none whitespace-nowrap">米包小計</th>
+                <th className="border px-3 py-3 text-center align-middle leading-none whitespace-nowrap">客製數量（張）</th>
+                <th className="border px-3 py-3 text-center align-middle leading-none whitespace-nowrap">客製單價</th>
+                <th className="border px-3 py-3 text-center align-middle leading-none whitespace-nowrap">客製小計</th>
+                <th className="border px-3 py-3 text-center align-middle leading-none whitespace-nowrap">小計</th>
               </tr>
             </thead>
 
             <tbody>
               {summary.rows.map((r) => (
                 <tr key={r.id}>
-                  <td className="border px-3 py-2 text-center">{r.name}</td>
-                  <td className="border px-3 py-2 text-center">{r.riceQty}</td>
-                  <td className="border px-3 py-2 text-center">NT${r.riceUnit}</td>
-                  <td className="border px-3 py-2 text-center">
+                  <td className="border px-3 py-3 text-center align-middle leading-none">{r.name}</td>
+                  <td className="border px-3 py-3 text-center align-middle leading-none">{r.riceQty}</td>
+                  <td className="border px-3 py-3 text-center align-middle leading-none">NT${r.riceUnit}</td>
+                  <td className="border px-3 py-3 text-center align-middle leading-none">
                     {formatCurrency(r.riceSubtotal)}
                   </td>
-                  <td className="border px-3 py-2 text-center">{r.qty}</td>
-                  <td className="border px-3 py-2 text-center">NT${r.baseUnit}</td>
-                  <td className="border px-3 py-2 text-center">
+                  <td className="border px-3 py-3 text-center align-middle leading-none">{r.qty}</td>
+                  <td className="border px-3 py-3 text-center align-middle leading-none">NT${r.baseUnit}</td>
+                  <td className="border px-3 py-3 text-center align-middle leading-none">
                     {formatCurrency(r.packSubtotal)}
                   </td>
-                  <td className="border px-3 py-2 text-center">
+                  <td className="border px-3 py-3 text-center align-middle leading-none">
                     {formatCurrency(r.lineTotal)}
                   </td>
                 </tr>
               ))}
 
               <tr>
-                <td className="border px-3 py-2 font-semibold text-center" colSpan={7}>
+                <td className="border px-3 py-3 font-semibold text-center align-middle leading-none" colSpan={7}>
                   合計
                 </td>
-                <td className="border px-3 py-2 text-center font-bold">
+                <td className="border px-3 py-3 font-semibold text-center align-middle leading-none">
                   {formatCurrency(summary.total)}
                 </td>
               </tr>

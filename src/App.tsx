@@ -77,7 +77,7 @@ interface CustomerInfo {
   email: string;
   line: string;
   scenario: string; // 使用情境
-  note: string; // ✅新增：備註（選填）
+  note: string; // ✅備註（選填）
   wantContact: boolean; // 是否勾選「我想要客服聯繫我」
 }
 
@@ -98,14 +98,14 @@ const App: React.FC = () => {
     email: "",
     line: "",
     scenario: "",
-    note: "", // ✅新增
+    note: "",
     wantContact: false,
   });
 
   // 原本包住整個畫面的 ref（保留）
   const containerRef = useRef<HTMLDivElement | null>(null);
 
-  // ✅ 新增：專門給 PDF 用的隱藏報價單版面
+  // ✅ 專門給 PDF 用的隱藏 A4 報價單版面
   const pdfRef = useRef<HTMLDivElement | null>(null);
 
   // 依米包數量與品項，計算「客製數量（張）」：至少為該品項 minQty
@@ -256,7 +256,7 @@ const App: React.FC = () => {
       email: "",
       line: "",
       scenario: "",
-      note: "", // ✅新增
+      note: "",
       wantContact: false,
     });
   }
@@ -277,10 +277,7 @@ const App: React.FC = () => {
   // 將報價紀錄寫入 Google Sheet（透過 Apps Script）
   async function sendToGoogleSheet() {
     if (!GOOGLE_SHEET_ENDPOINT) return;
-
-    if (typeof fetch !== "function") {
-      return;
-    }
+    if (typeof fetch !== "function") return;
 
     const payload = {
       name: customer.name,
@@ -288,7 +285,7 @@ const App: React.FC = () => {
       email: customer.email,
       line: customer.line,
       scenario: customer.scenario,
-      note: customer.note, // ✅新增
+      note: customer.note,
       wantContact: customer.wantContact,
       total: summary.total,
       items: summary.rows.map((r) => ({
@@ -321,7 +318,7 @@ const App: React.FC = () => {
     }
   }
 
-  // ✅ 使用 html2canvas 擷取「隱藏 A4 報價單版面」，轉成 PDF（滿版 A4）
+  // ✅ 擷取「隱藏 A4 報價單版面」→ PDF（滿版）
   async function downloadPdf() {
     if (!customer.name || !customer.phone) {
       window.alert("請先填寫「公司名稱 / 新人姓名」與「連絡電話」。");
@@ -346,14 +343,11 @@ const App: React.FC = () => {
     });
 
     const imgData = canvas.toDataURL("image/png");
-
     const pdf = new jsPDF("p", "mm", "a4");
     const pageWidth = pdf.internal.pageSize.getWidth();
     const pageHeight = pdf.internal.pageSize.getHeight();
 
-    // ✅ 直接滿版填滿 A4
     pdf.addImage(imgData, "PNG", 0, 0, pageWidth, pageHeight);
-
     pdf.save(`西川米店_報價單_${dateStr}.pdf`);
   }
 
@@ -436,7 +430,7 @@ const App: React.FC = () => {
                 />
               </div>
 
-              {/* ✅ 使用情境 */}
+              {/* 使用情境 */}
               <div>
                 <label className="block text-xs text-gray-600 mb-1">使用情境</label>
                 <select
@@ -456,9 +450,11 @@ const App: React.FC = () => {
                 </select>
               </div>
 
-              {/* ✅ 備註（選填） */}
+              {/* 備註（選填） */}
               <div>
-                <label className="block text-xs text-gray-600 mb-1">備註（選填）</label>
+                <label className="block text-xs text-gray-600 mb-1">
+                  備註（選填）
+                </label>
                 <input
                   type="text"
                   className="w-full rounded-xl border px-3 py-2 text-sm"
@@ -578,14 +574,11 @@ const App: React.FC = () => {
                             )}
                             value={it.riceQty}
                             onChange={(e) => {
-                              const v = e.target.value;
-                              const raw = Number(v);
-                              if (!Number.isFinite(raw)) {
-                                updateItem(it.id, { riceQty: 1 });
-                              } else {
-                                const fixed = Math.max(1, Math.floor(raw));
-                                updateItem(it.id, { riceQty: fixed });
-                              }
+                              const raw = Number(e.target.value);
+                              const fixed = Number.isFinite(raw)
+                                ? Math.max(1, Math.floor(raw))
+                                : 1;
+                              updateItem(it.id, { riceQty: fixed });
                             }}
                           />
                         </div>
@@ -621,11 +614,13 @@ const App: React.FC = () => {
                             </div>
                           </div>
                         </div>
+
                         {!valid && (
                           <p className="text-xs text-red-600 mt-1">
                             最低起印 {product.minQty} 張
                           </p>
                         )}
+
                         <div className="text-xs text-gray-500 mt-1 space-y-0.5">
                           {product.id === "headcard100" && (
                             <>
@@ -671,14 +666,14 @@ const App: React.FC = () => {
                                   ? "bg-black text-white border-black"
                                   : "bg-white text-gray-700"
                               )}
-                              onClick={() => {
+                              onClick={() =>
                                 setItems((prev) =>
                                   prev.map((rowItem) => ({
                                     ...rowItem,
                                     rush: false,
                                   }))
-                                );
-                              }}
+                                )
+                              }
                             >
                               10 天
                             </button>
@@ -690,14 +685,14 @@ const App: React.FC = () => {
                                   ? "bg-black text-white border-black"
                                   : "bg-white text-gray-700"
                               )}
-                              onClick={() => {
+                              onClick={() =>
                                 setItems((prev) =>
                                   prev.map((rowItem) => ({
                                     ...rowItem,
                                     rush: true,
                                   }))
-                                );
-                              }}
+                                )
+                              }
                             >
                               5 天
                             </button>
@@ -795,7 +790,9 @@ const App: React.FC = () => {
         </footer>
       </div>
 
-      {/* ✅ 隱藏版 A4 PDF 報價單版面（畫面看不到，PDF 會截這一塊） */}
+      {/* ===========================
+          ✅ 隱藏版 A4 PDF 報價單版面
+          =========================== */}
       <div
         ref={pdfRef}
         className="fixed left-[-10000px] top-0 bg-white text-gray-800"
@@ -815,110 +812,118 @@ const App: React.FC = () => {
             boxSizing: "border-box",
           }}
         >
-          {/* Logo + 標題 + 編號日期 */}
-          <div className="flex justify-between items-start mb-4">
-            <div className="flex items-start gap-3">
-              <img
-                src="/cichuan-logo.png"
-                alt="西川米店"
-                style={{ height: 36, width: "auto" }}
-              />
-              <div>
-                <div className="text-base font-bold">西川米店 報價單</div>
-              </div>
-            </div>
-
-            <div className="text-[10px] leading-relaxed text-right">
+          {/* ✅ Logo置中 + 標題置中 + 編號日期右上角 */}
+          <div className="relative mb-6">
+            <div className="absolute right-0 top-0 text-[10px] leading-relaxed text-right">
               <div>報價單編號：{quoteNo}</div>
               <div>日期：{dateStr}</div>
             </div>
+
+            <div className="flex flex-col items-center justify-center gap-2">
+              <img
+                src="/cichuan-logo.png"
+                alt="西川米店"
+                style={{ height: 44, width: "auto" }}
+              />
+              <div className="text-sm font-bold">西川米店 報價單</div>
+            </div>
           </div>
 
-          {/* SERVICE PROVIDER / CUSTOMER */}
-          <div className="flex justify-between mb-6 text-[10px]">
-            <div className="w-1/2 pr-4">
-              <div className="font-semibold mb-1">SERVICE PROVIDER</div>
-              <div>西川米店</div>
-              <div>聯絡人：西川客服</div>
-              <div>電話：04-3700-7900</div>
-              <div>Email：cichuan118@gmail.com</div>
-              <div>地址：408臺中市南屯區東興路一段468號</div>
+          {/* ✅ SERVICE PROVIDER / CUSTOMER 行距加大 */}
+          <div className="flex justify-between mb-8 text-[11px] leading-6">
+            <div className="w-1/2 pr-6">
+              <div className="font-semibold mb-2">SERVICE PROVIDER</div>
+              <div className="mb-1">西川米店</div>
+              <div className="mb-1">聯絡人：西川客服</div>
+              <div className="mb-1">電話：04-3700-7900</div>
+              <div className="mb-1">Email：cichuan118@gmail.com</div>
+              <div className="mb-1">地址：408臺中市南屯區東興路一段468號</div>
             </div>
+
             <div className="w-1/2">
-              <div className="font-semibold mb-1">CUSTOMER</div>
-              {customer.name && <div>公司 / 姓名：{customer.name}</div>}
-              {customer.phone && <div>聯絡電話：{customer.phone}</div>}
-              {customer.email && <div>Email：{customer.email}</div>}
-              {customer.line && <div>LINE：{customer.line}</div>}
-              {customer.scenario && <div>使用情境：{customer.scenario}</div>}
-              {customer.note && <div>備註：{customer.note}</div>}
+              <div className="font-semibold mb-2">CUSTOMER</div>
+              {customer.name && <div className="mb-1">公司 / 姓名：{customer.name}</div>}
+              {customer.phone && <div className="mb-1">聯絡電話：{customer.phone}</div>}
+              {customer.email && <div className="mb-1">Email：{customer.email}</div>}
+              {customer.line && <div className="mb-1">LINE：{customer.line}</div>}
+              {customer.scenario && <div className="mb-1">使用情境：{customer.scenario}</div>}
+              {customer.note && <div className="mb-1">備註：{customer.note}</div>}
             </div>
           </div>
 
-          {/* 明細表格 */}
-          <table className="w-full border-collapse text-[10px]">
+          {/* ✅ 報價明細（欄寬比例 + 全置中 + 間距拉大） */}
+          <table className="w-full border-collapse text-[11px] mt-2">
+            <colgroup>
+              {/* 欄寬比例：品項 28%，其他平均 */}
+              <col style={{ width: "28%" }} />
+              <col style={{ width: "10.285%" }} />
+              <col style={{ width: "10.285%" }} />
+              <col style={{ width: "10.285%" }} />
+              <col style={{ width: "10.285%" }} />
+              <col style={{ width: "10.285%" }} />
+              <col style={{ width: "10.285%" }} />
+              <col style={{ width: "10.285%" }} />
+            </colgroup>
+
             <thead>
               <tr className="bg-gray-100">
-                <th className="border px-1 py-1 text-left">品項</th>
-                <th className="border px-1 py-1 text-right">米包數量</th>
-                <th className="border px-1 py-1 text-right">米包單價</th>
-                <th className="border px-1 py-1 text-right">米包小計</th>
-                <th className="border px-1 py-1 text-right">客製數量（張）</th>
-                <th className="border px-1 py-1 text-right">客製單價</th>
-                <th className="border px-1 py-1 text-right">客製小計</th>
-                <th className="border px-1 py-1 text-right">小計</th>
+                <th className="border px-3 py-2 text-center">品項</th>
+                <th className="border px-3 py-2 text-center">米包數量</th>
+                <th className="border px-3 py-2 text-center">米包單價</th>
+                <th className="border px-3 py-2 text-center">米包小計</th>
+                <th className="border px-3 py-2 text-center">客製數量（張）</th>
+                <th className="border px-3 py-2 text-center">客製單價</th>
+                <th className="border px-3 py-2 text-center">客製小計</th>
+                <th className="border px-3 py-2 text-center">小計</th>
               </tr>
             </thead>
+
             <tbody>
               {summary.rows.map((r) => (
                 <tr key={r.id}>
-                  <td className="border px-1 py-1">{r.name}</td>
-                  <td className="border px-1 py-1 text-right">{r.riceQty}</td>
-                  <td className="border px-1 py-1 text-right">
-                    NT${r.riceUnit}
-                  </td>
-                  <td className="border px-1 py-1 text-right">
+                  <td className="border px-3 py-2 text-center">{r.name}</td>
+                  <td className="border px-3 py-2 text-center">{r.riceQty}</td>
+                  <td className="border px-3 py-2 text-center">NT${r.riceUnit}</td>
+                  <td className="border px-3 py-2 text-center">
                     {formatCurrency(r.riceSubtotal)}
                   </td>
-                  <td className="border px-1 py-1 text-right">{r.qty}</td>
-                  <td className="border px-1 py-1 text-right">
-                    NT${r.baseUnit}
-                  </td>
-                  <td className="border px-1 py-1 text-right">
+                  <td className="border px-3 py-2 text-center">{r.qty}</td>
+                  <td className="border px-3 py-2 text-center">NT${r.baseUnit}</td>
+                  <td className="border px-3 py-2 text-center">
                     {formatCurrency(r.packSubtotal)}
                   </td>
-                  <td className="border px-1 py-1 text-right">
+                  <td className="border px-3 py-2 text-center">
                     {formatCurrency(r.lineTotal)}
                   </td>
                 </tr>
               ))}
+
               <tr>
-                <td className="border px-1 py-1 font-semibold" colSpan={7}>
+                <td className="border px-3 py-2 font-semibold text-center" colSpan={7}>
                   合計
                 </td>
-                <td className="border px-1 py-1 text-right font-bold">
+                <td className="border px-3 py-2 text-center font-bold">
                   {formatCurrency(summary.total)}
                 </td>
               </tr>
             </tbody>
           </table>
 
-          {/* 注意事項 */}
-          <div className="mt-6 text-[9px] leading-relaxed">
-            <div className="font-semibold mb-1">注意事項：</div>
-            <div>
-              米包製作天數：
-              {summary.riceDays ? `${summary.riceDays} 天` : "依實際排程"}
+          {/* ✅ 注意事項 */}
+          <div className="mt-8 text-[10px] leading-relaxed">
+            <div className="font-semibold mb-2">注意事項：</div>
+            <div className="mb-1">
+              米包製作天數：{summary.riceDays ? `${summary.riceDays} 天` : "依實際排程"}
             </div>
-            <div>
+            <div className="mb-2">
               來檔客製製作天數：
               {summary.maxLeadDays ? `${summary.maxLeadDays} 天` : "依實際排程"}
             </div>
-            <div>
+            <div className="mb-1">
               ＊交期以「完稿確認」後起算；急件請先與客服確認產能與時程。
             </div>
-            <div>＊運費、設計排版服務費另計（如需）。</div>
-            <div>
+            <div className="mb-1">＊運費、設計排版服務費另計（如需）。</div>
+            <div className="mb-1">
               ＊本試算為預估金額，實際金額以客服 / 報價單為主。
             </div>
           </div>

@@ -77,6 +77,7 @@ interface CustomerInfo {
   email: string;
   line: string;
   scenario: string; // 使用情境
+  note: string; // ✅新增：備註（選填）
   wantContact: boolean; // 是否勾選「我想要客服聯繫我」
 }
 
@@ -97,11 +98,13 @@ const App: React.FC = () => {
     email: "",
     line: "",
     scenario: "",
+    note: "", // ✅新增
     wantContact: false,
   });
 
-  // 原本包住整個畫面的 ref（保留，不再用來截圖）
+  // 原本包住整個畫面的 ref（保留）
   const containerRef = useRef<HTMLDivElement | null>(null);
+
   // ✅ 新增：專門給 PDF 用的隱藏報價單版面
   const pdfRef = useRef<HTMLDivElement | null>(null);
 
@@ -253,20 +256,22 @@ const App: React.FC = () => {
       email: "",
       line: "",
       scenario: "",
+      note: "", // ✅新增
       wantContact: false,
     });
   }
 
-  // 報價單日期與編號（畫在隱藏 PDF 版面上）
+  // 報價單日期與編號
   const now = new Date();
-  const dateStr = `${now.getFullYear()}/${String(
-    now.getMonth() + 1
-  ).padStart(2, "0")}/${String(now.getDate()).padStart(2, "0")}`;
+  const dateStr = `${now.getFullYear()}/${String(now.getMonth() + 1).padStart(
+    2,
+    "0"
+  )}/${String(now.getDate()).padStart(2, "0")}`;
   const quoteNo =
     `${now.getFullYear()}` +
     `${String(now.getMonth() + 1).padStart(2, "0")}` +
     `${String(now.getDate()).padStart(2, "0")}` +
-    `${String(now.getHours()).padStart(2, "0")}` +
+    `-${String(now.getHours()).padStart(2, "0")}` +
     `${String(now.getMinutes()).padStart(2, "0")}`;
 
   // 將報價紀錄寫入 Google Sheet（透過 Apps Script）
@@ -283,6 +288,7 @@ const App: React.FC = () => {
       email: customer.email,
       line: customer.line,
       scenario: customer.scenario,
+      note: customer.note, // ✅新增
       wantContact: customer.wantContact,
       total: summary.total,
       items: summary.rows.map((r) => ({
@@ -302,9 +308,7 @@ const App: React.FC = () => {
     try {
       const res = await fetch(GOOGLE_SHEET_ENDPOINT, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
 
@@ -317,7 +321,7 @@ const App: React.FC = () => {
     }
   }
 
-  // ✅ 使用 html2canvas 擷取「隱藏報價單版面」，轉成 PDF
+  // ✅ 使用 html2canvas 擷取「隱藏 A4 報價單版面」，轉成 PDF（滿版 A4）
   async function downloadPdf() {
     if (!customer.name || !customer.phone) {
       window.alert("請先填寫「公司名稱 / 新人姓名」與「連絡電話」。");
@@ -332,39 +336,30 @@ const App: React.FC = () => {
       return;
     }
 
+    // A4@96dpi 近似：794 x 1123
     const canvas = await html2canvas(element, {
       scale: 2,
       useCORS: true,
-      width: element.scrollWidth,
-      height: element.scrollHeight,
+      backgroundColor: "#ffffff",
+      width: 794,
+      height: 1123,
     });
 
     const imgData = canvas.toDataURL("image/png");
+
     const pdf = new jsPDF("p", "mm", "a4");
     const pageWidth = pdf.internal.pageSize.getWidth();
     const pageHeight = pdf.internal.pageSize.getHeight();
 
-    const imgProps = pdf.getImageProperties(imgData);
-    let pdfWidth = pageWidth;
-    let pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
+    // ✅ 直接滿版填滿 A4
+    pdf.addImage(imgData, "PNG", 0, 0, pageWidth, pageHeight);
 
-    if (pdfHeight > pageHeight) {
-      const ratio = pageHeight / pdfHeight;
-      pdfHeight = pageHeight;
-      pdfWidth = pdfWidth * ratio;
-    }
-
-    const x = (pageWidth - pdfWidth) / 2;
-    const y = (pageHeight - pdfHeight) / 2;
-
-    pdf.addImage(imgData, "PNG", x, y, pdfWidth, pdfHeight);
     pdf.save(`西川米店_報價單_${dateStr}.pdf`);
   }
 
   return (
     <div className="min-h-screen w-full bg-gray-50 py-10 px-4">
       <div className="mx-auto max-w-4xl" ref={containerRef}>
-        {/* ======= 這裡是你原本的整個畫面，完全不動 ======= */}
         <header className="mb-6 text-center">
           <h1 className="text-2xl md:text-3xl font-bold tracking-tight">
             西川米店｜客製化即時報價計算器
@@ -381,6 +376,7 @@ const App: React.FC = () => {
               <h2 className="text-sm font-semibold">基本資料</h2>
               <p className="text-[11px] text-red-500">＊為必填欄位</p>
             </div>
+
             <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div>
                 <label className="block text-xs text-gray-600 mb-1">
@@ -397,6 +393,7 @@ const App: React.FC = () => {
                   }
                 />
               </div>
+
               <div>
                 <label className="block text-xs text-gray-600 mb-1">
                   <span className="text-red-500 mr-0.5">＊</span>
@@ -412,6 +409,7 @@ const App: React.FC = () => {
                   }
                 />
               </div>
+
               <div>
                 <label className="block text-xs text-gray-600 mb-1">Email</label>
                 <input
@@ -424,6 +422,7 @@ const App: React.FC = () => {
                   }
                 />
               </div>
+
               <div>
                 <label className="block text-xs text-gray-600 mb-1">LINE</label>
                 <input
@@ -436,6 +435,8 @@ const App: React.FC = () => {
                   }
                 />
               </div>
+
+              {/* ✅ 使用情境 */}
               <div>
                 <label className="block text-xs text-gray-600 mb-1">使用情境</label>
                 <select
@@ -454,7 +455,22 @@ const App: React.FC = () => {
                   <option value="其他">其他</option>
                 </select>
               </div>
+
+              {/* ✅ 備註（選填） */}
+              <div>
+                <label className="block text-xs text-gray-600 mb-1">備註（選填）</label>
+                <input
+                  type="text"
+                  className="w-full rounded-xl border px-3 py-2 text-sm"
+                  placeholder="例：希望 12/25 前到貨、要分點配送…"
+                  value={customer.note}
+                  onChange={(e) =>
+                    setCustomer((prev) => ({ ...prev, note: e.target.value }))
+                  }
+                />
+              </div>
             </div>
+
             <div className="pt-1">
               <label className="inline-flex items-center text-xs text-gray-700">
                 <input
@@ -530,10 +546,7 @@ const App: React.FC = () => {
                             const key = e.target.value as ProductKey;
                             const nextProduct = PRODUCTS[key];
                             const nextRice = nextProduct.minQty;
-                            const nextQty = computeCustomQty(
-                              nextProduct,
-                              nextRice
-                            );
+                            const nextQty = computeCustomQty(nextProduct, nextRice);
                             updateItem(it.id, {
                               productKey: key,
                               riceQty: nextRice,
@@ -743,19 +756,13 @@ const App: React.FC = () => {
                   {summary.rows.map((r) => (
                     <tr key={r.id} className="border-t">
                       <td className="px-3 py-2">{r.name}</td>
-                      <td className="px-3 py-2 text-right font-mono">
-                        {r.riceQty}
-                      </td>
-                      <td className="px-3 py-2 text-right font-mono">
-                        NT${r.riceUnit}
-                      </td>
+                      <td className="px-3 py-2 text-right font-mono">{r.riceQty}</td>
+                      <td className="px-3 py-2 text-right font-mono">NT${r.riceUnit}</td>
                       <td className="px-3 py-2 text-right font-mono">
                         {formatCurrency(r.riceSubtotal)}
                       </td>
                       <td className="px-3 py-2 text-right font-mono">{r.qty}</td>
-                      <td className="px-3 py-2 text-right font-mono">
-                        NT${r.baseUnit}
-                      </td>
+                      <td className="px-3 py-2 text-right font-mono">NT${r.baseUnit}</td>
                       <td className="px-3 py-2 text-right font-mono">
                         {formatCurrency(r.packSubtotal)}
                       </td>
@@ -788,17 +795,39 @@ const App: React.FC = () => {
         </footer>
       </div>
 
-      {/* ✅ 隱藏版 PDF 報價單版面（畫面看不到，PDF 會截這一塊） */}
+      {/* ✅ 隱藏版 A4 PDF 報價單版面（畫面看不到，PDF 會截這一塊） */}
       <div
         ref={pdfRef}
-        className="fixed left-[-10000px] top-0 w-[794px] bg-white text-gray-800 text-xs p-6"
+        className="fixed left-[-10000px] top-0 bg-white text-gray-800"
+        style={{
+          width: "794px",
+          height: "1123px",
+          padding: "40px",
+          boxSizing: "border-box",
+        }}
       >
-        <div className="border border-gray-300 p-6">
-          {/* 標題＋編號＋日期 */}
+        <div
+          style={{
+            width: "100%",
+            height: "100%",
+            border: "1px solid #d1d5db",
+            padding: "28px",
+            boxSizing: "border-box",
+          }}
+        >
+          {/* Logo + 標題 + 編號日期 */}
           <div className="flex justify-between items-start mb-4">
-            <div>
-              <div className="text-base font-bold">西川米店 報價單</div>
+            <div className="flex items-start gap-3">
+              <img
+                src="/cichuan-logo.png"
+                alt="西川米店"
+                style={{ height: 36, width: "auto" }}
+              />
+              <div>
+                <div className="text-base font-bold">西川米店 報價單</div>
+              </div>
             </div>
+
             <div className="text-[10px] leading-relaxed text-right">
               <div>報價單編號：{quoteNo}</div>
               <div>日期：{dateStr}</div>
@@ -811,8 +840,9 @@ const App: React.FC = () => {
               <div className="font-semibold mb-1">SERVICE PROVIDER</div>
               <div>西川米店</div>
               <div>聯絡人：西川客服</div>
-              <div>電話：04-0000-0000</div>
-              <div>Email：service@cichuan118.com</div>
+              <div>電話：04-3700-7900</div>
+              <div>Email：cichuan118@gmail.com</div>
+              <div>地址：408臺中市南屯區東興路一段468號</div>
             </div>
             <div className="w-1/2">
               <div className="font-semibold mb-1">CUSTOMER</div>
@@ -820,9 +850,8 @@ const App: React.FC = () => {
               {customer.phone && <div>聯絡電話：{customer.phone}</div>}
               {customer.email && <div>Email：{customer.email}</div>}
               {customer.line && <div>LINE：{customer.line}</div>}
-              {customer.scenario && (
-                <div>使用情境：{customer.scenario}</div>
-              )}
+              {customer.scenario && <div>使用情境：{customer.scenario}</div>}
+              {customer.note && <div>備註：{customer.note}</div>}
             </div>
           </div>
 
@@ -874,20 +903,16 @@ const App: React.FC = () => {
             </tbody>
           </table>
 
-          {/* 備註 */}
+          {/* 注意事項 */}
           <div className="mt-6 text-[9px] leading-relaxed">
-            <div className="font-semibold mb-1">備註：</div>
+            <div className="font-semibold mb-1">注意事項：</div>
             <div>
               米包製作天數：
-              {summary.riceDays
-                ? `${summary.riceDays} 天`
-                : "依實際排程"}
+              {summary.riceDays ? `${summary.riceDays} 天` : "依實際排程"}
             </div>
             <div>
               來檔客製製作天數：
-              {summary.maxLeadDays
-                ? `${summary.maxLeadDays} 天`
-                : "依實際排程"}
+              {summary.maxLeadDays ? `${summary.maxLeadDays} 天` : "依實際排程"}
             </div>
             <div>
               ＊交期以「完稿確認」後起算；急件請先與客服確認產能與時程。

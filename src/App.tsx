@@ -1,370 +1,901 @@
-import React, { useMemo, useRef, useState } from "react";
-import html2canvas from "html2canvas";
+import React, { useMemo, useState, useRef } from "react";
 import jsPDF from "jspdf";
+import html2canvas from "html2canvas";
 
-type ProductTier = {
-  min: number;
-  unitPrice: number;
-  leadTime: string;
-  note?: string;
-};
+// 後台紀錄用的 Google Apps Script Endpoint（寫入 Google Sheet）
+const GOOGLE_SHEET_ENDPOINT =
+  "https://script.google.com/macros/s/AKfycbzcvN_S7G8n_jwNIBOHKvRDVAXfwWiVWHaAt3DcVGyqWtQ-afKj3trDWKZsPw9P7pI/exec";
 
-type Product = {
-  id: string;
-  label: string;
-  description?: string;
-  minQty: number;
-  tiers: ProductTier[];
-};
-
-const PRODUCTS: Record<string, Product> = {
+// 客製價目表設定
+const PRODUCTS = {
   headcard100: {
     id: "headcard100",
-    label: "100公克米包＋專用頭卡",
-    description: "適合婚禮小物、企業活動小禮，單入小包設計。",
+    label: "100公克米包+專用頭卡",
     minQty: 40,
     tiers: [
-      { min: 40, unitPrice: 28, leadTime: "7–10 個工作天", note: "少量客製" },
-      { min: 100, unitPrice: 24, leadTime: "10–14 個工作天" },
-      { min: 300, unitPrice: 22, leadTime: "14–20 個工作天", note: "大量優惠" },
+      { min: 500, unitPrice: 4, leadDays: 5 },
+      { min: 250, unitPrice: 5, leadDays: 5 },
+      { min: 40, unitPrice: 6, leadDays: 2 },
     ],
   },
-  headcard150: {
-    id: "headcard150",
-    label: "150公克米包＋專用頭卡",
-    description: "份量更飽滿的客製小物，適合作為活動或開幕贈品。",
+  band300: {
+    id: "band300",
+    label: "300公克米包+專用腰封",
+    minQty: 30,
+    tiers: [
+      { min: 1000, unitPrice: 4, leadDays: 5 },
+      { min: 500, unitPrice: 5, leadDays: 5 },
+      { min: 30, unitPrice: 8, leadDays: 2 },
+    ],
+  },
+  pack500: {
+    id: "pack500",
+    label: "500公克米包+專用腰封",
     minQty: 40,
     tiers: [
-      { min: 40, unitPrice: 32, leadTime: "7–10 個工作天" },
-      { min: 100, unitPrice: 29, leadTime: "10–14 個工作天" },
-      { min: 300, unitPrice: 27, leadTime: "14–20 個工作天" },
+      { min: 6000, unitPrice: 6, leadDays: 5 },
+      { min: 2000, unitPrice: 7, leadDays: 5 },
+      { min: 40, unitPrice: 10, leadDays: 2 },
     ],
   },
-  giftbox2: {
-    id: "giftbox2",
-    label: "雙入米禮盒（300g×2）",
-    description: "適合過年、節慶送禮，附提袋。",
-    minQty: 20,
-    tiers: [
-      { min: 20, unitPrice: 260, leadTime: "10–14 個工作天" },
-      { min: 80, unitPrice: 240, leadTime: "14–20 個工作天" },
-      { min: 200, unitPrice: 230, leadTime: "20–25 個工作天" },
-    ],
-  },
-};
+} as const;
 
-const formatCurrency = (value: number) =>
-  value.toLocaleString("zh-TW", {
+type ProductKey = keyof typeof PRODUCTS;
+type Product = (typeof PRODUCTS)[ProductKey];
+
+function calcTier(product: Product, qty: number) {
+  if (!qty || qty < product.minQty) return null;
+  const tier = [...product.tiers]
+    .sort((a, b) => b.min - a.min)
+    .find((t) => qty >= t.min);
+  return tier || null;
+}
+
+function formatCurrency(n: number) {
+  return new Intl.NumberFormat("zh-TW", {
     style: "currency",
     currency: "TWD",
     maximumFractionDigits: 0,
-  });
+  }).format(n);
+}
+
+function classNames(...cls: (string | false | null | undefined)[]) {
+  return cls.filter(Boolean).join(" ");
+}
+
+interface LineItem {
+  id: string;
+  productKey: ProductKey;
+  qty: number; // 來檔客製數量（張） - 自動計算
+  riceQty: number; // 米包數量（包） - >=1
+  rush: boolean; // 是否 5 天快速出貨
+}
+
+interface CustomerInfo {
+  name: string; // 公司名稱 / 新人姓名
+  phone: string;
+  email: string;
+  line: string;
+  scenario: string; // 使用情境
+  wantContact: boolean; // 是否勾選「我想要客服聯繫我」
+}
 
 const App: React.FC = () => {
-  const [selectedProductId, setSelectedProductId] = useState<string>("headcard100");
-  const [qty, setQty] = useState<number>(100);
-  const [customerName, setCustomerName] = useState<string>("");
-  const [note, setNote] = useState<string>("");
+  const [items, setItems] = useState<LineItem[]>([
+    {
+      id: crypto.randomUUID(),
+      productKey: "headcard100",
+      qty: PRODUCTS.headcard100.minQty,
+      riceQty: PRODUCTS.headcard100.minQty,
+      rush: false,
+    },
+  ]);
 
-  const quoteRef = useRef<HTMLDivElement | null>(null);
-  const [isExporting, setIsExporting] = useState(false);
+  const [customer, setCustomer] = useState<CustomerInfo>({
+    name: "",
+    phone: "",
+    email: "",
+    line: "",
+    scenario: "",
+    wantContact: false,
+  });
 
-  const product = useMemo(
-    () => PRODUCTS[selectedProductId],
-    [selectedProductId]
-  );
+  // 原本包住整個畫面的 ref（保留，不再用來截圖）
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  // ✅ 新增：專門給 PDF 用的隱藏報價單版面
+  const pdfRef = useRef<HTMLDivElement | null>(null);
 
-  const currentTier = useMemo(() => {
-    const tiers = product.tiers.sort((a, b) => a.min - b.min);
-    let tier = tiers[0];
-    for (const t of tiers) {
-      if (qty >= t.min) tier = t;
-    }
-    return tier;
-  }, [product, qty]);
+  // 依米包數量與品項，計算「客製數量（張）」：至少為該品項 minQty
+  function computeCustomQty(product: Product, riceQty: number): number {
+    const safeRice = Number.isFinite(riceQty)
+      ? Math.max(1, Math.floor(riceQty))
+      : 1;
+    return Math.max(product.minQty, safeRice);
+  }
 
-  const unitPrice = currentTier.unitPrice;
-  const totalPrice = unitPrice * (isNaN(qty) ? 0 : qty);
+  const summary = useMemo(() => {
+    let subtotal = 0;
+    let riceSubtotalTotal = 0;
+    let packSubtotalTotal = 0;
+    let maxLeadDays: number | null = null;
+    let allRushTrue = true;
+    let allRushFalse = true;
 
-  const handleQtyChange: React.ChangeEventHandler<HTMLInputElement> = (e) => {
-    const v = parseInt(e.target.value, 10);
-    if (isNaN(v)) {
-      setQty(product.minQty);
-    } else {
-      setQty(v < product.minQty ? product.minQty : v);
-    }
-  };
+    const rows = items.map((it) => {
+      const product = PRODUCTS[it.productKey];
+      const riceQty = Math.max(1, Math.floor(it.riceQty));
+      const qty = computeCustomQty(product, riceQty);
+      const rush = items[0]?.rush ?? false;
 
-  const handleDownloadPdf = async () => {
-    if (!quoteRef.current) return;
-    try {
-      setIsExporting(true);
-      const element = quoteRef.current;
+      const tier = calcTier(product, qty);
+      const valid = !!tier;
 
-      const canvas = await html2canvas(element, {
-        scale: 2,
-        useCORS: true,
-        scrollX: 0,
-        scrollY: 0,
-      });
+      const baseUnit = tier?.unitPrice ?? 0; // 客製單價
+      const leadDays = tier?.leadDays ?? null;
 
-      const imgData = canvas.toDataURL("image/png");
-      const pdf = new jsPDF("p", "mm", "a4");
-      const pageWidth = pdf.internal.pageSize.getWidth();
-      const pageHeight = pdf.internal.pageSize.getHeight();
+      const baseRiceUnit =
+        product.id === "headcard100"
+          ? 29
+          : product.id === "band300"
+          ? 49
+          : 240;
 
-      const imgWidth = pageWidth;
-      const imgHeight = (canvas.height * imgWidth) / canvas.width;
+      const riceUnit = rush
+        ? product.id === "headcard100"
+          ? 35
+          : product.id === "band300"
+          ? 59
+          : 270
+        : baseRiceUnit;
 
-      let position = 0;
-      let heightLeft = imgHeight;
+      const riceSubtotal = riceQty * riceUnit;
+      const packSubtotal = valid ? qty * baseUnit : 0;
+      const lineTotal = riceSubtotal + packSubtotal;
 
-      pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
-      heightLeft -= pageHeight;
+      subtotal += lineTotal;
+      riceSubtotalTotal += riceSubtotal;
+      packSubtotalTotal += packSubtotal;
 
-      while (heightLeft > 0) {
-        position = heightLeft - imgHeight;
-        pdf.addPage();
-        pdf.addImage(imgData, "PNG", 0, position, imgWidth, imgHeight);
-        heightLeft -= pageHeight;
+      if (leadDays != null) {
+        maxLeadDays =
+          maxLeadDays == null ? leadDays : Math.max(maxLeadDays, leadDays);
       }
 
-      const dateStr = new Date().toISOString().slice(0, 10);
-      const fileName = customerName
-        ? `西川米店_客製報價_${customerName}_${dateStr}.pdf`
-        : `西川米店_客製報價_${dateStr}.pdf`;
+      if (rush) {
+        allRushFalse = false;
+      } else {
+        allRushTrue = false;
+      }
 
-      pdf.save(fileName);
-    } catch (error) {
-      console.error("PDF 下載失敗：", error);
-      alert("下載 PDF 時發生錯誤，請再試一次。");
-    } finally {
-      setIsExporting(false);
+      return {
+        id: it.id,
+        name: product.label,
+        qty,
+        riceQty,
+        baseUnit,
+        riceUnit,
+        riceSubtotal,
+        packSubtotal,
+        lineTotal,
+        valid,
+        rush,
+        leadDays,
+        product,
+      };
+    });
+
+    const tax = 0;
+    const total = subtotal + tax;
+
+    const riceDays =
+      rows.length === 0 ? null : allRushTrue ? 5 : allRushFalse ? 10 : null;
+
+    return {
+      rows,
+      subtotal,
+      tax,
+      total,
+      riceSubtotalTotal,
+      packSubtotalTotal,
+      riceDays,
+      maxLeadDays,
+    };
+  }, [items]);
+
+  function updateItem(id: string, patch: Partial<LineItem>) {
+    setItems((prev) =>
+      prev.map((it) => {
+        if (it.id !== id) return it;
+        const next: LineItem = { ...it, ...patch };
+        const product = PRODUCTS[next.productKey];
+        const fixedRice = Math.max(1, Math.floor(next.riceQty));
+        const nextQty = computeCustomQty(product, fixedRice);
+        return { ...next, riceQty: fixedRice, qty: nextQty };
+      })
+    );
+  }
+
+  function addItem() {
+    setItems((prev) => {
+      const baseRush = prev[0]?.rush ?? false;
+      return [
+        ...prev,
+        {
+          id: crypto.randomUUID(),
+          productKey: "headcard100",
+          qty: PRODUCTS.headcard100.minQty,
+          riceQty: PRODUCTS.headcard100.minQty,
+          rush: baseRush,
+        },
+      ];
+    });
+  }
+
+  function removeItem(id: string) {
+    setItems((prev) =>
+      prev.length <= 1 ? prev : prev.filter((it) => it.id !== id)
+    );
+  }
+
+  function resetAll() {
+    setItems([
+      {
+        id: crypto.randomUUID(),
+        productKey: "headcard100",
+        qty: PRODUCTS.headcard100.minQty,
+        riceQty: PRODUCTS.headcard100.minQty,
+        rush: false,
+      },
+    ]);
+    setCustomer({
+      name: "",
+      phone: "",
+      email: "",
+      line: "",
+      scenario: "",
+      wantContact: false,
+    });
+  }
+
+  // 報價單日期與編號（畫在隱藏 PDF 版面上）
+  const now = new Date();
+  const dateStr = `${now.getFullYear()}/${String(
+    now.getMonth() + 1
+  ).padStart(2, "0")}/${String(now.getDate()).padStart(2, "0")}`;
+  const quoteNo =
+    `${now.getFullYear()}` +
+    `${String(now.getMonth() + 1).padStart(2, "0")}` +
+    `${String(now.getDate()).padStart(2, "0")}` +
+    `${String(now.getHours()).padStart(2, "0")}` +
+    `${String(now.getMinutes()).padStart(2, "0")}`;
+
+  // 將報價紀錄寫入 Google Sheet（透過 Apps Script）
+  async function sendToGoogleSheet() {
+    if (!GOOGLE_SHEET_ENDPOINT) return;
+
+    if (typeof fetch !== "function") {
+      return;
     }
-  };
+
+    const payload = {
+      name: customer.name,
+      phone: customer.phone,
+      email: customer.email,
+      line: customer.line,
+      scenario: customer.scenario,
+      wantContact: customer.wantContact,
+      total: summary.total,
+      items: summary.rows.map((r) => ({
+        name: r.name,
+        riceQty: r.riceQty,
+        riceUnit: r.riceUnit,
+        riceSubtotal: r.riceSubtotal,
+        customQty: r.qty,
+        customUnit: r.baseUnit,
+        customSubtotal: r.packSubtotal,
+        lineTotal: r.lineTotal,
+        riceDays: summary.riceDays,
+        customDays: summary.maxLeadDays,
+      })),
+    };
+
+    try {
+      const res = await fetch(GOOGLE_SHEET_ENDPOINT, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        console.warn("送到 Google Sheet 失敗：HTTP " + res.status, text);
+      }
+    } catch (err) {
+      console.warn("送到 Google Sheet 失敗（網路或權限問題）", err);
+    }
+  }
+
+  // ✅ 使用 html2canvas 擷取「隱藏報價單版面」，轉成 PDF
+  async function downloadPdf() {
+    if (!customer.name || !customer.phone) {
+      window.alert("請先填寫「公司名稱 / 新人姓名」與「連絡電話」。");
+      return;
+    }
+
+    void sendToGoogleSheet();
+
+    const element = pdfRef.current;
+    if (!element) {
+      window.alert("找不到報價單版面，請重新整理頁面再試一次。");
+      return;
+    }
+
+    const canvas = await html2canvas(element, {
+      scale: 2,
+      useCORS: true,
+      width: element.scrollWidth,
+      height: element.scrollHeight,
+    });
+
+    const imgData = canvas.toDataURL("image/png");
+    const pdf = new jsPDF("p", "mm", "a4");
+    const pageWidth = pdf.internal.pageSize.getWidth();
+    const pageHeight = pdf.internal.pageSize.getHeight();
+
+    const imgProps = pdf.getImageProperties(imgData);
+    let pdfWidth = pageWidth;
+    let pdfHeight = (imgProps.height * pdfWidth) / imgProps.width;
+
+    if (pdfHeight > pageHeight) {
+      const ratio = pageHeight / pdfHeight;
+      pdfHeight = pageHeight;
+      pdfWidth = pdfWidth * ratio;
+    }
+
+    const x = (pageWidth - pdfWidth) / 2;
+    const y = (pageHeight - pdfHeight) / 2;
+
+    pdf.addImage(imgData, "PNG", x, y, pdfWidth, pdfHeight);
+    pdf.save(`西川米店_報價單_${dateStr}.pdf`);
+  }
 
   return (
-    <div className="min-h-screen flex flex-col items-center px-4 py-8">
-      <div className="w-full max-w-6xl grid gap-6 lg:grid-cols-[1.15fr,1fr]">
-        {/* 左側：操作區 */}
-        <div className="bg-white rounded-2xl shadow-md p-6 lg:p-8">
-          <header className="flex flex-col gap-2 mb-6 border-b border-slate-200 pb-4">
-            <h1 className="text-2xl lg:text-3xl font-bold text-slate-900">
-              西川米店｜客製化即時計算器
-            </h1>
-            <p className="text-sm text-slate-500">
-              適用於客製米小物、禮盒報價的快速估價工具，可立即看到單價與總金額，並下載成 PDF 報價單。
-            </p>
-          </header>
+    <div className="min-h-screen w-full bg-gray-50 py-10 px-4">
+      <div className="mx-auto max-w-4xl" ref={containerRef}>
+        {/* ======= 這裡是你原本的整個畫面，完全不動 ======= */}
+        <header className="mb-6 text-center">
+          <h1 className="text-2xl md:text-3xl font-bold tracking-tight">
+            西川米店｜客製化即時報價計算器
+          </h1>
+          <p className="text-gray-600 mt-2">
+            輸入米包數量，即時計算米包與客製加工費用，並顯示製作天數與預估小計。
+          </p>
+        </header>
 
-          <section className="space-y-4 mb-6">
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">
-                客戶名稱或專案名稱（選填）
-              </label>
-              <input
-                type="text"
-                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 focus:border-transparent"
-                placeholder="例如：〇〇婚禮小物、××公司尾牙禮"
-                value={customerName}
-                onChange={(e) => setCustomerName(e.target.value)}
-              />
+        <div className="bg-white rounded-2xl shadow p-4 md:p-6 space-y-4">
+          {/* 基本資料區 */}
+          <section className="border rounded-2xl p-4 bg-gray-50/80 space-y-3">
+            <div className="flex items-baseline justify-between gap-2">
+              <h2 className="text-sm font-semibold">基本資料</h2>
+              <p className="text-[11px] text-red-500">＊為必填欄位</p>
             </div>
-
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">
-                商品項目
-              </label>
-              <select
-                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-amber-400 focus:border-transparent"
-                value={selectedProductId}
-                onChange={(e) => setSelectedProductId(e.target.value)}
-              >
-                {Object.values(PRODUCTS).map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.label}
-                  </option>
-                ))}
-              </select>
-              {product.description && (
-                <p className="mt-1 text-xs text-slate-500">
-                  {product.description}
-                </p>
-              )}
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
               <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">
-                  客製數量（最少 {product.minQty} 份）
+                <label className="block text-xs text-gray-600 mb-1">
+                  <span className="text-red-500 mr-0.5">＊</span>
+                  公司名稱 / 新人姓名
                 </label>
                 <input
-                  type="number"
-                  min={product.minQty}
-                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 focus:border-transparent"
-                  value={qty}
-                  onChange={handleQtyChange}
-                />
-                <p className="mt-1 text-xs text-slate-500">
-                  目前套用：滿 {currentTier.min} 份以上的階梯單價。
-                </p>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1">
-                  預估單價（自動帶入，可再微調）
-                </label>
-                <input
-                  type="number"
-                  className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 focus:border-transparent"
-                  value={unitPrice}
+                  type="text"
+                  className="w-full rounded-xl border px-3 py-2 text-sm"
+                  placeholder="例：西川米店／賴ＯＯ＆高ＯＯ"
+                  value={customer.name}
                   onChange={(e) =>
-                    (currentTier.unitPrice = Number(e.target.value) || unitPrice)
+                    setCustomer((prev) => ({ ...prev, name: e.target.value }))
                   }
                 />
-                <p className="mt-1 text-xs text-slate-500">
-                  單價可依實際談價微調，PDF 會以此金額為主。
-                </p>
+              </div>
+              <div>
+                <label className="block text-xs text-gray-600 mb-1">
+                  <span className="text-red-500 mr-0.5">＊</span>
+                  連絡電話
+                </label>
+                <input
+                  type="tel"
+                  className="w-full rounded-xl border px-3 py-2 text-sm"
+                  placeholder="例：09xx-xxx-xxx"
+                  value={customer.phone}
+                  onChange={(e) =>
+                    setCustomer((prev) => ({ ...prev, phone: e.target.value }))
+                  }
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-600 mb-1">Email</label>
+                <input
+                  type="email"
+                  className="w-full rounded-xl border px-3 py-2 text-sm"
+                  placeholder="例：name@example.com"
+                  value={customer.email}
+                  onChange={(e) =>
+                    setCustomer((prev) => ({ ...prev, email: e.target.value }))
+                  }
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-600 mb-1">LINE</label>
+                <input
+                  type="text"
+                  className="w-full rounded-xl border px-3 py-2 text-sm"
+                  placeholder="例：LINE ID 或 顯示名稱"
+                  value={customer.line}
+                  onChange={(e) =>
+                    setCustomer((prev) => ({ ...prev, line: e.target.value }))
+                  }
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-gray-600 mb-1">使用情境</label>
+                <select
+                  className="w-full rounded-xl border px-3 py-2 bg-white text-sm"
+                  value={customer.scenario}
+                  onChange={(e) =>
+                    setCustomer((prev) => ({ ...prev, scenario: e.target.value }))
+                  }
+                >
+                  <option value="">請選擇</option>
+                  <option value="婚禮">婚禮</option>
+                  <option value="春節企業送禮">春節企業送禮</option>
+                  <option value="彌月">彌月</option>
+                  <option value="尾牙">尾牙</option>
+                  <option value="活動">活動</option>
+                  <option value="其他">其他</option>
+                </select>
               </div>
             </div>
-
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1">
-                備註說明（選填）
+            <div className="pt-1">
+              <label className="inline-flex items-center text-xs text-gray-700">
+                <input
+                  type="checkbox"
+                  className="rounded border-gray-300"
+                  checked={customer.wantContact}
+                  onChange={(e) =>
+                    setCustomer((prev) => ({
+                      ...prev,
+                      wantContact: e.target.checked,
+                    }))
+                  }
+                />
+                <span className="ml-2">我想要客服聯繫我</span>
               </label>
-              <textarea
-                className="w-full rounded-lg border border-slate-200 px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400 focus:border-transparent min-h-[72px]"
-                placeholder="例如：指定米種、包裝客製內容、運費條件、是否分點配送⋯⋯"
-                value={note}
-                onChange={(e) => setNote(e.target.value)}
-              />
             </div>
           </section>
 
-          <section className="border-t border-slate-200 pt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div className="text-sm">
-              <div className="text-slate-600">
-                預估總金額：
-                <span className="font-semibold text-amber-600 text-lg ml-1">
-                  {formatCurrency(totalPrice)}
-                </span>
-              </div>
-              <div className="text-xs text-slate-500 mt-1">
-                僅為試算金額，實際報價仍以西川米店正式報價單為準。
-              </div>
+          {/* 操作按鈕列 */}
+          <div className="flex items-center justify-between gap-2">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={addItem}
+                className="px-3 py-2 rounded-xl bg-black text-white text-sm hover:opacity-90"
+              >
+                新增品項
+              </button>
+              <button
+                onClick={resetAll}
+                className="px-3 py-2 rounded-xl border text-sm hover:bg-gray-50"
+              >
+                重設
+              </button>
             </div>
             <button
-              onClick={handleDownloadPdf}
-              disabled={isExporting}
-              className="inline-flex items-center justify-center rounded-full bg-amber-500 hover:bg-amber-600 disabled:opacity-60 disabled:cursor-not-allowed px-5 py-2 text-sm font-medium text-white transition-colors"
+              onClick={downloadPdf}
+              className="px-3 py-2 rounded-xl bg-emerald-600 text-white text-sm hover:bg-emerald-700"
             >
-              {isExporting ? "產生中⋯⋯" : "下載 PDF 報價單"}
+              下載 PDF 報價單
             </button>
-          </section>
-        </div>
+          </div>
 
-        {/* 右側：PDF 預覽區（由 html2canvas 擷取） */}
-        <div className="bg-slate-50 rounded-2xl border border-dashed border-amber-200 p-4 lg:p-6">
-          <p className="text-xs text-slate-500 mb-2">
-            下方區塊為 PDF 擷取範圍（A4 比例），可依需要微調樣式。
-          </p>
-          <div
-            ref={quoteRef}
-            className="bg-white shadow-sm rounded-xl px-6 py-6 text-[13px] text-slate-800 mx-auto"
-            style={{ aspectRatio: "595 / 842", maxHeight: "720px", overflow: "hidden" }}
-          >
-            <header className="flex justify-between items-start border-b border-slate-200 pb-3 mb-4">
-              <div>
-                <h2 className="text-lg font-bold tracking-wide">
-                  西川米店 客製化報價單
-                </h2>
-                <p className="text-xs text-slate-500 mt-1">
-                  TEL｜04-2273-5306　地址｜臺中市太平區中山路二段410號
-                </p>
-              </div>
-              <div className="text-right text-xs text-slate-500">
-                <div>報價日期：{new Date().toISOString().slice(0, 10)}</div>
-                {customerName && <div>客戶／專案：{customerName}</div>}
-              </div>
-            </header>
+          {/* 品項列表 */}
+          <div className="space-y-3">
+            {items.map((it, index) => {
+              const product = PRODUCTS[it.productKey];
+              const row = summary.rows.find((r) => r.id === it.id);
+              const rush = items[0]?.rush ?? false;
 
-            <section className="mb-4">
-              <table className="w-full border border-slate-200 border-collapse text-xs">
-                <thead className="bg-slate-50">
+              const riceUnit = row?.riceUnit ?? 0;
+              const riceSubtotal = row?.riceSubtotal ?? 0;
+              const customUnit = row?.baseUnit ?? 0;
+              const customSubtotal = row?.packSubtotal ?? 0;
+              const valid = row?.valid ?? false;
+
+              return (
+                <div
+                  key={it.id}
+                  className="rounded-2xl border p-4 md:p-5 bg-gray-50/60"
+                >
+                  <div className="grid grid-cols-1 md:grid-cols-12 gap-3 md:gap-4 items-start">
+                    {/* 左側：品項與數量 */}
+                    <div className="md:col-span-7 space-y-3">
+                      {/* 品項選擇 */}
+                      <div>
+                        <label className="block text-sm text-gray-600 mb-1">
+                          品項
+                        </label>
+                        <select
+                          className="w-full rounded-xl border px-3 py-2 bg-white text-sm"
+                          value={it.productKey}
+                          onChange={(e) => {
+                            const key = e.target.value as ProductKey;
+                            const nextProduct = PRODUCTS[key];
+                            const nextRice = nextProduct.minQty;
+                            const nextQty = computeCustomQty(
+                              nextProduct,
+                              nextRice
+                            );
+                            updateItem(it.id, {
+                              productKey: key,
+                              riceQty: nextRice,
+                              qty: nextQty,
+                            });
+                          }}
+                        >
+                          {(Object.keys(PRODUCTS) as ProductKey[]).map((k) => (
+                            <option key={k} value={k}>
+                              {PRODUCTS[k].label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {/* 米包數量輸入 */}
+                      <div className="flex items-end gap-3">
+                        <div className="flex-1">
+                          <label className="block text-sm text-gray-600 mb-1">
+                            米包數量（包）
+                          </label>
+                          <input
+                            type="number"
+                            min={1}
+                            step={1}
+                            className={classNames(
+                              "w-full rounded-xl border px-3 py-2 bg-white",
+                              !valid && "border-red-400 focus:border-red-500"
+                            )}
+                            value={it.riceQty}
+                            onChange={(e) => {
+                              const v = e.target.value;
+                              const raw = Number(v);
+                              if (!Number.isFinite(raw)) {
+                                updateItem(it.id, { riceQty: 1 });
+                              } else {
+                                const fixed = Math.max(1, Math.floor(raw));
+                                updateItem(it.id, { riceQty: fixed });
+                              }
+                            }}
+                          />
+                        </div>
+                        <div className="w-32 text-xs text-gray-600 text-left space-y-1 flex flex-col justify-end">
+                          <div>{`米包單價：NT$${riceUnit}／包`}</div>
+                          <div>米包小計：{formatCurrency(riceSubtotal)}</div>
+                        </div>
+                      </div>
+
+                      {/* 來檔客製數量（只顯示，不可修改） */}
+                      <div className="flex flex-col gap-1">
+                        <div className="flex items-end gap-3">
+                          <div className="flex-1">
+                            <label className="block text-sm text-gray-600 mb-1">
+                              來檔客製數量（張）
+                            </label>
+                            <input
+                              type="number"
+                              className="w-full rounded-xl border px-3 py-2 bg-gray-100 text-gray-500"
+                              value={row?.qty ?? it.qty}
+                              disabled
+                              readOnly
+                            />
+                          </div>
+                          <div className="w-32 text-xs text-gray-600 text-left space-y-1 flex flex-col justify-end">
+                            <div>
+                              客製單價：
+                              {valid ? `NT$${customUnit}／張` : "—"}
+                            </div>
+                            <div>
+                              客製小計：
+                              {valid ? formatCurrency(customSubtotal) : "—"}
+                            </div>
+                          </div>
+                        </div>
+                        {!valid && (
+                          <p className="text-xs text-red-600 mt-1">
+                            最低起印 {product.minQty} 張
+                          </p>
+                        )}
+                        <div className="text-xs text-gray-500 mt-1 space-y-0.5">
+                          {product.id === "headcard100" && (
+                            <>
+                              <div>500 張以上 → NT$4</div>
+                              <div>250–499 張 → NT$5</div>
+                              <div>40–249 張 → NT$6</div>
+                              <div>未滿 40 張以 40 張計算</div>
+                            </>
+                          )}
+                          {product.id === "band300" && (
+                            <>
+                              <div>1000 張以上 → NT$4</div>
+                              <div>500–999 張 → NT$5</div>
+                              <div>30–499 張 → NT$8</div>
+                              <div>未滿 30 張以 30 張計算</div>
+                            </>
+                          )}
+                          {product.id === "pack500" && (
+                            <>
+                              <div>6000 張以上 → NT$6</div>
+                              <div>2000–5999 張 → NT$7</div>
+                              <div>40–1999 張 → NT$10</div>
+                              <div>未滿 40 張以 40 張計算</div>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* 右側：製作天數 & 刪除 */}
+                    <div className="md:col-span-5 flex flex-col gap-2 items-end justify-between h-full">
+                      {index === 0 && (
+                        <div className="w-full md:w-auto text-right md:text-left">
+                          <label className="block text-sm text-gray-600 mb-1">
+                            製作天數（米包）
+                          </label>
+                          <div className="flex gap-2 justify-end md:justify-start">
+                            <button
+                              type="button"
+                              className={classNames(
+                                "px-3 py-1 rounded-full border text-xs",
+                                !rush
+                                  ? "bg-black text-white border-black"
+                                  : "bg-white text-gray-700"
+                              )}
+                              onClick={() => {
+                                setItems((prev) =>
+                                  prev.map((rowItem) => ({
+                                    ...rowItem,
+                                    rush: false,
+                                  }))
+                                );
+                              }}
+                            >
+                              10 天
+                            </button>
+                            <button
+                              type="button"
+                              className={classNames(
+                                "px-3 py-1 rounded-full border text-xs",
+                                rush
+                                  ? "bg-black text-white border-black"
+                                  : "bg-white text-gray-700"
+                              )}
+                              onClick={() => {
+                                setItems((prev) =>
+                                  prev.map((rowItem) => ({
+                                    ...rowItem,
+                                    rush: true,
+                                  }))
+                                );
+                              }}
+                            >
+                              5 天
+                            </button>
+                          </div>
+                          <p className="text-xs text-gray-500 mt-1 text-right md:text-left">
+                            10天：100g NT$29/包、300g NT$49/包、500g NT$240/包。
+                            <br />
+                            5天：100g NT$35/包、300g NT$59/包、500g NT$270/包。
+                          </p>
+                        </div>
+                      )}
+
+                      {items.length > 1 && (
+                        <button
+                          onClick={() => removeItem(it.id)}
+                          className="text-xs text-gray-500 hover:text-red-600"
+                        >
+                          刪除此品項
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* 訂單試算區 */}
+          <div className="mt-6 border-t pt-4">
+            <h3 className="font-semibold mb-3">訂單試算</h3>
+            <div className="overflow-auto rounded-xl border">
+              <table className="min-w-full text-sm table-fixed">
+                <colgroup>
+                  <col className="w-[220px]" />
+                  <col className="w-[110px]" />
+                  <col className="w-[110px]" />
+                  <col className="w-[120px]" />
+                  <col className="w-[120px]" />
+                  <col className="w-[110px]" />
+                  <col className="w-[120px]" />
+                  <col className="w-[150px]" />
+                </colgroup>
+                <thead className="bg-gray-100">
                   <tr>
-                    <th className="border border-slate-200 px-2 py-1 text-left">
-                      品項
-                    </th>
-                    <th className="border border-slate-200 px-2 py-1 text-right">
-                      數量
-                    </th>
-                    <th className="border border-slate-200 px-2 py-1 text-right">
-                      單價 (元)
-                    </th>
-                    <th className="border border-slate-200 px-2 py-1 text-right">
-                      小計 (元)
-                    </th>
+                    <th className="text-left px-3 py-2">品項</th>
+                    <th className="text-right px-3 py-2">米包數量</th>
+                    <th className="text-right px-3 py-2">米包單價</th>
+                    <th className="text-right px-3 py-2">米包小計</th>
+                    <th className="text-right px-3 py-2">客製數量（張）</th>
+                    <th className="text-right px-3 py-2">客製單價</th>
+                    <th className="text-right px-3 py-2">客製小計</th>
+                    <th className="text-right px-3 py-2">小計</th>
                   </tr>
                 </thead>
                 <tbody>
-                  <tr>
-                    <td className="border border-slate-200 px-2 py-1 align-top">
-                      <div className="font-medium">{product.label}</div>
-                      {product.description && (
-                        <div className="text-[11px] text-slate-500">
-                          {product.description}
-                        </div>
-                      )}
-                      <div className="text-[11px] text-slate-500 mt-1">
-                        交期估計：{currentTier.leadTime}
-                        {currentTier.note ? `（${currentTier.note}）` : ""}
-                      </div>
-                    </td>
-                    <td className="border border-slate-200 px-2 py-1 text-right align-top">
-                      {qty.toLocaleString()}
-                    </td>
-                    <td className="border border-slate-200 px-2 py-1 text-right align-top">
-                      {unitPrice.toLocaleString()}
-                    </td>
-                    <td className="border border-slate-200 px-2 py-1 text-right align-top">
-                      {totalPrice.toLocaleString()}
+                  {summary.rows.map((r) => (
+                    <tr key={r.id} className="border-t">
+                      <td className="px-3 py-2">{r.name}</td>
+                      <td className="px-3 py-2 text-right font-mono">
+                        {r.riceQty}
+                      </td>
+                      <td className="px-3 py-2 text-right font-mono">
+                        NT${r.riceUnit}
+                      </td>
+                      <td className="px-3 py-2 text-right font-mono">
+                        {formatCurrency(r.riceSubtotal)}
+                      </td>
+                      <td className="px-3 py-2 text-right font-mono">{r.qty}</td>
+                      <td className="px-3 py-2 text-right font-mono">
+                        NT${r.baseUnit}
+                      </td>
+                      <td className="px-3 py-2 text-right font-mono">
+                        {formatCurrency(r.packSubtotal)}
+                      </td>
+                      <td className="px-3 py-2 text-right font-mono font-medium">
+                        {formatCurrency(r.lineTotal)}
+                      </td>
+                    </tr>
+                  ))}
+                  <tr className="bg-gray-50 border-t">
+                    <td className="px-3 py-2 font-medium">合計</td>
+                    <td className="px-3 py-2" colSpan={6}></td>
+                    <td className="px-3 py-2 text-right font-bold text-base">
+                      {formatCurrency(summary.total)}
                     </td>
                   </tr>
                 </tbody>
-                <tfoot>
-                  <tr className="bg-amber-50">
-                    <td
-                      className="border border-slate-200 px-2 py-1 text-right font-semibold"
-                      colSpan={3}
-                    >
-                      預估總計
-                    </td>
-                    <td className="border border-slate-200 px-2 py-1 text-right font-semibold">
-                      {totalPrice.toLocaleString()} 元
-                    </td>
-                  </tr>
-                </tfoot>
               </table>
-            </section>
+            </div>
 
-            {note && (
-              <section className="mb-3">
-                <h3 className="text-xs font-semibold mb-1">備註說明</h3>
-                <p className="border border-slate-200 rounded px-2 py-2 text-[11px] leading-relaxed whitespace-pre-wrap">
-                  {note}
-                </p>
-              </section>
-            )}
+            <div className="text-xs text-gray-500 mt-3 space-y-1">
+              <p>＊交期以「完稿確認」後起算；急件請先與客服確認產能與時程。</p>
+              <p>＊運費、設計排版服務費另計（如需）。</p>
+              <p>＊本試算為預估金額，實際金額以客服/報價單為主。</p>
+            </div>
+          </div>
+        </div>
 
-            <section className="mt-auto">
-              <h3 className="text-xs font-semibold mb-1">報價說明</h3>
-              <ol className="text-[11px] text-slate-500 list-decimal list-inside space-y-1 leading-snug">
-                <li>本報價為預估金額，詳細內容與稅額以正式報價單及訂購單為準。</li>
-                <li>實際交期需依當下排程與檔期量能確認，如有急件需求請先來電洽詢。</li>
-                <li>報價未含特殊客製設計費（如插畫設計、Logo 重繪等），如有需要可另行估價。</li>
-                <li>運費與分點配送條件，依配送地點與箱數另行報價。</li>
-              </ol>
-            </section>
+        <footer className="text-center text-xs text-gray-500 mt-6">
+          西川米店 © {new Date().getFullYear()} — 客製印刷 / 企業大量訂購歡迎洽詢
+        </footer>
+      </div>
+
+      {/* ✅ 隱藏版 PDF 報價單版面（畫面看不到，PDF 會截這一塊） */}
+      <div
+        ref={pdfRef}
+        className="fixed left-[-10000px] top-0 w-[794px] bg-white text-gray-800 text-xs p-6"
+      >
+        <div className="border border-gray-300 p-6">
+          {/* 標題＋編號＋日期 */}
+          <div className="flex justify-between items-start mb-4">
+            <div>
+              <div className="text-base font-bold">西川米店 報價單</div>
+            </div>
+            <div className="text-[10px] leading-relaxed text-right">
+              <div>報價單編號：{quoteNo}</div>
+              <div>日期：{dateStr}</div>
+            </div>
+          </div>
+
+          {/* SERVICE PROVIDER / CUSTOMER */}
+          <div className="flex justify-between mb-6 text-[10px]">
+            <div className="w-1/2 pr-4">
+              <div className="font-semibold mb-1">SERVICE PROVIDER</div>
+              <div>西川米店</div>
+              <div>聯絡人：西川客服</div>
+              <div>電話：04-0000-0000</div>
+              <div>Email：service@cichuan118.com</div>
+            </div>
+            <div className="w-1/2">
+              <div className="font-semibold mb-1">CUSTOMER</div>
+              {customer.name && <div>公司 / 姓名：{customer.name}</div>}
+              {customer.phone && <div>聯絡電話：{customer.phone}</div>}
+              {customer.email && <div>Email：{customer.email}</div>}
+              {customer.line && <div>LINE：{customer.line}</div>}
+              {customer.scenario && (
+                <div>使用情境：{customer.scenario}</div>
+              )}
+            </div>
+          </div>
+
+          {/* 明細表格 */}
+          <table className="w-full border-collapse text-[10px]">
+            <thead>
+              <tr className="bg-gray-100">
+                <th className="border px-1 py-1 text-left">品項</th>
+                <th className="border px-1 py-1 text-right">米包數量</th>
+                <th className="border px-1 py-1 text-right">米包單價</th>
+                <th className="border px-1 py-1 text-right">米包小計</th>
+                <th className="border px-1 py-1 text-right">客製數量（張）</th>
+                <th className="border px-1 py-1 text-right">客製單價</th>
+                <th className="border px-1 py-1 text-right">客製小計</th>
+                <th className="border px-1 py-1 text-right">小計</th>
+              </tr>
+            </thead>
+            <tbody>
+              {summary.rows.map((r) => (
+                <tr key={r.id}>
+                  <td className="border px-1 py-1">{r.name}</td>
+                  <td className="border px-1 py-1 text-right">{r.riceQty}</td>
+                  <td className="border px-1 py-1 text-right">
+                    NT${r.riceUnit}
+                  </td>
+                  <td className="border px-1 py-1 text-right">
+                    {formatCurrency(r.riceSubtotal)}
+                  </td>
+                  <td className="border px-1 py-1 text-right">{r.qty}</td>
+                  <td className="border px-1 py-1 text-right">
+                    NT${r.baseUnit}
+                  </td>
+                  <td className="border px-1 py-1 text-right">
+                    {formatCurrency(r.packSubtotal)}
+                  </td>
+                  <td className="border px-1 py-1 text-right">
+                    {formatCurrency(r.lineTotal)}
+                  </td>
+                </tr>
+              ))}
+              <tr>
+                <td className="border px-1 py-1 font-semibold" colSpan={7}>
+                  合計
+                </td>
+                <td className="border px-1 py-1 text-right font-bold">
+                  {formatCurrency(summary.total)}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+
+          {/* 備註 */}
+          <div className="mt-6 text-[9px] leading-relaxed">
+            <div className="font-semibold mb-1">備註：</div>
+            <div>
+              米包製作天數：
+              {summary.riceDays
+                ? `${summary.riceDays} 天`
+                : "依實際排程"}
+            </div>
+            <div>
+              來檔客製製作天數：
+              {summary.maxLeadDays
+                ? `${summary.maxLeadDays} 天`
+                : "依實際排程"}
+            </div>
+            <div>
+              ＊交期以「完稿確認」後起算；急件請先與客服確認產能與時程。
+            </div>
+            <div>＊運費、設計排版服務費另計（如需）。</div>
+            <div>
+              ＊本試算為預估金額，實際金額以客服 / 報價單為主。
+            </div>
           </div>
         </div>
       </div>
